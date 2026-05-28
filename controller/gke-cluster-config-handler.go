@@ -103,12 +103,17 @@ func (h *Handler) OnGkeConfigChanged(_ string, config *gkev1.GKEClusterConfig) (
 
 	h.gkeClientCtx = ctx
 
+	if err := ValidateCredentialSpec(&config.Spec); err != nil {
+		return config, err
+	}
+	logDeprecatedCredentialType(config)
+
 	cred, err := GetSecret(h.gkeClientCtx, h.secrets, &config.Spec)
 	if err != nil {
 		return config, err
 	}
 
-	gkeClient, err := gke.GetGKEClusterClient(h.gkeClientCtx, cred)
+	gkeClient, err := gke.GetGKEClusterClientWithOptions(h.gkeClientCtx, authOptionsFor(&config.Spec, cred))
 	if err != nil {
 		return config, err
 	}
@@ -129,6 +134,26 @@ func (h *Handler) OnGkeConfigChanged(_ string, config *gkev1.GKEClusterConfig) (
 	}
 
 	return config, nil
+}
+
+// logDeprecatedCredentialType emits a one-line warning whenever the legacy
+// service-account JSON key credential mode is used. Workload Identity
+// Federation or Application Default Credentials should be preferred. See
+// https://cloud.google.com/iam/docs/workload-identity-federation for details.
+func logDeprecatedCredentialType(config *gkev1.GKEClusterConfig) {
+	if config == nil {
+		return
+	}
+	if credentialType(&config.Spec) == gke.CredentialTypeServiceAccountKey {
+		logrus.Warnf("Cluster [%s (id: %s)] is using deprecated googleCredentialType %q. "+
+			"Migrate to %q (Workload Identity Federation) or %q (Application Default Credentials) for keyless, short-lived authentication. "+
+			"See https://cloud.google.com/iam/docs/workload-identity-federation.",
+			config.Spec.ClusterName, config.Name,
+			gke.CredentialTypeServiceAccountKey,
+			gke.CredentialTypeWorkloadIdentityFederation,
+			gke.CredentialTypeApplicationDefault,
+		)
+	}
 }
 
 // recordError writes the error return by onChange to the failureMessage field on status. If there is no error, then
@@ -201,7 +226,7 @@ func (h *Handler) OnGkeConfigRemoved(_ string, config *gkev1.GKEClusterConfig) (
 		return config, err
 	}
 
-	gkeClient, err := gke.GetGKEClusterClient(h.gkeClientCtx, cred)
+	gkeClient, err := gke.GetGKEClusterClientWithOptions(h.gkeClientCtx, authOptionsFor(&config.Spec, cred))
 	if err != nil {
 		return config, err
 	}

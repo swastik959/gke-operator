@@ -4,6 +4,26 @@
 
 The GKE operator is a controller for Kubernetes Custom Resource Definitions (CRDs) that manages cluster provisioning in Google Kubernetes Engine. It uses a GKEClusterConfig defined by a CRD.
 
+## Credentials
+
+The operator supports three ways of obtaining Google Cloud credentials, selected via the `spec.googleCredentialType` field on a `GKEClusterConfig`:
+
+| `googleCredentialType` | Secret required | Notes |
+| --- | --- | --- |
+| `serviceAccountKey` (default, **deprecated**) | yes — `service_account` JSON | Long-lived static key. Provided for backward compatibility; a deprecation warning is logged on every reconcile. |
+| `workloadIdentityFederation` | yes — `external_account` JSON | Workload Identity Federation. Short-lived, automatically rotated access tokens. Recommended for GitHub Actions / GitLab CI / Azure AD / OIDC providers. |
+| `applicationDefault` | no | Uses Application Default Credentials from the environment. When the operator pod runs on GKE with Workload Identity bound to its KSA, this is fully keyless. |
+
+When set, `spec.googleCredentialType` defaults to `serviceAccountKey` so existing `GKEClusterConfig` resources continue to work unchanged.
+
+The credential JSON (for the first two modes) is read from the secret referenced by `spec.googleCredentialSecret` (`namespace:name`) under the key `googlecredentialConfig-authEncodedJson`, the same key Rancher's cloud-credential machinery already uses. The operator validates that the JSON `type` field matches the selected mode.
+
+### Service-account impersonation
+
+For any of the above modes, `spec.impersonateServiceAccount` may be set to a service-account email. When present, the base credentials are wrapped with `google.golang.org/api/impersonate` to mint short-lived (1-hour) tokens for that account. This is a useful stepping stone toward keyless operation while a fleet still ships long-lived keys.
+
+A complete example using Workload Identity Federation is available at [`examples/cluster-wif.yaml`](examples/cluster-wif.yaml).
+
 ## Build
 
 Operator binary can be built using the following command:

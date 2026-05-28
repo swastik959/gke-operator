@@ -1,0 +1,57 @@
+apiVersion: gke.cattle.io/v1
+kind: GKEClusterConfig
+metadata:
+  name: example-cluster-wif
+spec:
+  clusterName: "example-cluster-wif"
+  description: "example cluster authenticated with Workload Identity Federation"
+  labels: {}
+  region: "us-west1"
+  projectID: "example-project"
+  kubernetesVersion: "1.29.0-gke.1600"
+  # Select Workload Identity Federation. The referenced secret must contain
+  # an `external_account` JSON document under the
+  # `googlecredentialConfig-authEncodedJson` key.
+  googleCredentialType: workloadIdentityFederation
+  googleCredentialSecret: "cattle-global-data:cc-wif-example"
+  # Optionally impersonate a service account once federated credentials are
+  # exchanged. The resulting access tokens are short-lived (1 hour).
+  # impersonateServiceAccount: "gke-operator@example-project.iam.gserviceaccount.com"
+  ipAllocationPolicy:
+    useIpAliases: true
+  nodePools:
+    - name: example-node-pool
+      autoscaling:
+        enabled: false
+      config: {}
+      initialNodeCount: 1
+      maxPodsConstraint: 110
+      version: "1.29.0-gke.1600"
+      management:
+        autoRepair: true
+        autoUpgrade: true
+  network: default
+  subnetwork: default
+  locations: []
+---
+# Example external_account JSON secret. In production the secret is created
+# by Rancher's cloud-credential machinery; this is shown for reference.
+#
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: cc-wif-example
+#   namespace: cattle-global-data
+# type: Opaque
+# stringData:
+#   googlecredentialConfig-authEncodedJson: |
+#     {
+#       "type": "external_account",
+#       "audience": "//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/my-pool/providers/my-provider",
+#       "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+#       "token_url": "https://sts.googleapis.com/v1/token",
+#       "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/gke-operator@example-project.iam.gserviceaccount.com:generateAccessToken",
+#       "credential_source": {
+#         "file": "/var/run/secrets/tokens/gcp-token"
+#       }
+#     }

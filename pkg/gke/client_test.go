@@ -1,6 +1,7 @@
 package gke
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 
@@ -40,6 +41,8 @@ const testExternalAccountJSON = `{
 }`
 
 var _ = Describe("GetTokenSourceWithOptions", func() {
+	ctx := context.Background()
+
 	It("accepts a service-account JSON key by default", func() {
 		ts, err := GetTokenSourceWithOptions(ctx, AuthOptions{
 			Credential: testServiceAccountJSON,

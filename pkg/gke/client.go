@@ -59,7 +59,11 @@ type credentialEnvelope struct {
 // Deprecated: prefer GetGKEClientWithOptions, which understands credential
 // types beyond service account JSON keys.
 func GetGKEClient(ctx context.Context, credential string) (*gkeapi.Service, error) {
-	return GetGKEClientWithOptions(ctx, AuthOptions{Credential: credential})
+	ts, err := GetTokenSource(ctx, credential)
+	if err != nil {
+		return nil, err
+	}
+	return getServiceClientWithTokenSource(ctx, ts)
 }
 
 // GetGKEClientWithOptions returns a GKE Service client built from the supplied
@@ -77,7 +81,11 @@ func GetGKEClientWithOptions(ctx context.Context, opts AuthOptions) (*gkeapi.Ser
 //
 // Deprecated: prefer GetGKEClusterClientWithOptions.
 func GetGKEClusterClient(ctx context.Context, credential string) (services.GKEClusterService, error) {
-	return GetGKEClusterClientWithOptions(ctx, AuthOptions{Credential: credential})
+	ts, err := GetTokenSource(ctx, credential)
+	if err != nil {
+		return nil, err
+	}
+	return services.NewGKEClusterService(ctx, ts)
 }
 
 // GetGKEClusterClientWithOptions returns a high-level GKEClusterService built
@@ -100,7 +108,11 @@ func getServiceClientWithTokenSource(ctx context.Context, ts oauth2.TokenSource)
 //
 // Deprecated: prefer GetTokenSourceWithOptions.
 func GetTokenSource(ctx context.Context, credential string) (oauth2.TokenSource, error) {
-	return GetTokenSourceWithOptions(ctx, AuthOptions{Credential: credential})
+	creds, err := google.CredentialsFromJSON(ctx, []byte(credential), gkeapi.CloudPlatformScope)
+	if err != nil {
+		return nil, err
+	}
+	return creds.TokenSource, nil
 }
 
 // GetTokenSourceWithOptions returns an oauth2.TokenSource constructed

@@ -14,7 +14,7 @@ The operator supports three ways of obtaining Google Cloud credentials, selected
 | `workloadIdentityFederation` | yes — `external_account` JSON | Workload Identity Federation. Short-lived, automatically rotated access tokens. Recommended for GitHub Actions / GitLab CI / Azure AD / OIDC providers. |
 | `applicationDefault` | no | Uses Application Default Credentials from the environment. When the operator pod runs on GKE with Workload Identity bound to its KSA, this is fully keyless. |
 
-When set, `spec.googleCredentialType` defaults to `serviceAccountKey` so existing `GKEClusterConfig` resources continue to work unchanged.
+When unset, `spec.googleCredentialType` defaults to `serviceAccountKey` so existing `GKEClusterConfig` resources continue to work unchanged.
 
 The credential JSON (for the first two modes) is read from the secret referenced by `spec.googleCredentialSecret` (`namespace:name`) under the key `googlecredentialConfig-authEncodedJson`, the same key Rancher's cloud-credential machinery already uses. The operator validates that the JSON `type` field matches the selected mode.
 

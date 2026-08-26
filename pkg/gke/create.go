@@ -26,7 +26,18 @@ func Create(ctx context.Context, gkeClient services.GKEClusterService, config *g
 		return err
 	}
 
-	createClusterRequest := NewClusterCreateRequest(config)
+	createChannel, err := releaseChannelForCreate(ctx, gkeClient, config)
+	if err != nil {
+		return err
+	}
+
+	// The create request is built from a copy of the config so that the release
+	// channel resolved above is the one used to build the request, without
+	// mutating the config owned by the caller.
+	createConfig := config.DeepCopy()
+	createConfig.Spec.ReleaseChannel = &createChannel
+
+	createClusterRequest := NewClusterCreateRequest(createConfig)
 
 	_, err = gkeClient.ClusterCreate(ctx,
 		LocationRRN(config.Spec.ProjectID, Location(config.Spec.Region, config.Spec.Zone)),
@@ -156,30 +167,137 @@ func NewClusterCreateRequest(config *gkev1.GKEClusterConfig) *gkeapi.CreateClust
 
 	request.Cluster.ReleaseChannel = newClusterReleaseChannel(config)
 
+	// GKE does not allow node auto-upgrade to be disabled while a cluster is
+	// enrolled in a release channel. Clusters that are only enrolled so that they
+	// can be created are unenrolled once they are running, and the reconcile loop
+	// then restores the configured node management settings.
+	if request.Cluster.ReleaseChannel != nil {
+		for _, np := range request.Cluster.NodePools {
+			if np.Management == nil {
+				np.Management = &gkeapi.NodeManagement{}
+			}
+			np.Management.AutoUpgrade = true
+		}
+	}
+
 	return request
 }
 
 // newClusterReleaseChannel returns the release channel to set on a cluster create
-// request. GKE rejects create requests that do not explicitly select a release
-// channel, so clusters that do not configure one are created with the
-// UNSPECIFIED channel ("No channel") to preserve the previous behavior.
-// Autopilot clusters cannot opt out of release channels, so no channel is sent
-// for them unless one is configured and GKE selects the default channel.
+// request. It expects the channel on the config to already be resolved by
+// releaseChannelForCreate. An empty or UNSPECIFIED channel means that no release
+// channel is sent at all, since GKE rejects both an omitted and an UNSPECIFIED
+// channel for the cluster types that require one.
 func newClusterReleaseChannel(config *gkev1.GKEClusterConfig) *gkeapi.ReleaseChannel {
-	channel := strings.ToUpper(strings.TrimSpace(utils.StringValue(config.Spec.ReleaseChannel)))
-	if channel == "NONE" {
-		channel = ReleaseChannelUnspecified
-	}
-	if channel == "" {
-		if config.Spec.AutopilotConfig != nil && config.Spec.AutopilotConfig.Enabled {
-			return nil
-		}
-		channel = ReleaseChannelUnspecified
+	channel := normalizeReleaseChannel(config.Spec.ReleaseChannel)
+	if channel == ReleaseChannelUnspecified {
+		return nil
 	}
 
 	return &gkeapi.ReleaseChannel{
 		Channel: channel,
 	}
+}
+
+// normalizeReleaseChannel converts a configured release channel into a GKE
+// release channel value. An unset, empty or "none" channel is normalized to
+// UNSPECIFIED, which represents "No channel".
+func normalizeReleaseChannel(configured *string) string {
+	channel := strings.ToUpper(strings.TrimSpace(utils.StringValue(configured)))
+	if channel == "" || channel == ReleaseChannelNone {
+		return ReleaseChannelUnspecified
+	}
+	return channel
+}
+
+// DesiredReleaseChannel returns the release channel the cluster should end up
+// enrolled in. UNSPECIFIED means the cluster should not be enrolled in any
+// release channel.
+func DesiredReleaseChannel(config *gkev1.GKEClusterConfig) string {
+	return normalizeReleaseChannel(config.Spec.ReleaseChannel)
+}
+
+// CanUnenrollFromReleaseChannel indicates whether a cluster is allowed to leave
+// its release channel. Autopilot clusters are always managed by a release
+// channel and cannot opt out.
+func CanUnenrollFromReleaseChannel(config *gkev1.GKEClusterConfig) bool {
+	return config.Spec.AutopilotConfig == nil || !config.Spec.AutopilotConfig.Enabled
+}
+
+// releaseChannelForCreate returns the release channel to enroll a cluster in
+// when it is created.
+//
+// GKE no longer allows creating a cluster that is not enrolled in a release
+// channel, and rejects both an omitted release channel and an explicit
+// UNSPECIFIED channel. Clusters that should not be enrolled in a channel are
+// therefore created in a temporary channel that supports the requested
+// Kubernetes version, and are unenrolled once they are running.
+func releaseChannelForCreate(ctx context.Context, gkeClient services.GKEClusterService, config *gkev1.GKEClusterConfig) (string, error) {
+	// Alpha clusters cannot be enrolled in a release channel at all.
+	if config.Spec.EnableKubernetesAlpha != nil && *config.Spec.EnableKubernetesAlpha {
+		return ReleaseChannelUnspecified, nil
+	}
+
+	desired := DesiredReleaseChannel(config)
+	if desired != ReleaseChannelUnspecified {
+		return desired, nil
+	}
+
+	// Autopilot clusters are always enrolled in a release channel and cannot be
+	// unenrolled, so let GKE pick its default channel instead of choosing one.
+	if !CanUnenrollFromReleaseChannel(config) {
+		return ReleaseChannelUnspecified, nil
+	}
+
+	return findReleaseChannelForVersion(ctx, gkeClient, config)
+}
+
+// findReleaseChannelForVersion returns a release channel that supports the
+// Kubernetes version requested by the config.
+func findReleaseChannelForVersion(ctx context.Context, gkeClient services.GKEClusterService, config *gkev1.GKEClusterConfig) (string, error) {
+	serverConfig, err := gkeClient.ServerConfigGet(
+		ctx, LocationRRN(config.Spec.ProjectID, Location(config.Spec.Region, config.Spec.Zone)))
+	if err != nil {
+		return "", fmt.Errorf("error getting GKE server config to select a release channel for cluster [%s (id: %s)]: %w", config.Spec.ClusterName, config.Name, err)
+	}
+
+	channels := make(map[string]*gkeapi.ReleaseChannelConfig, len(serverConfig.Channels))
+	for _, channel := range serverConfig.Channels {
+		if channel == nil {
+			continue
+		}
+		channels[strings.ToUpper(channel.Channel)] = channel
+	}
+
+	version := utils.StringValue(config.Spec.KubernetesVersion)
+	for _, name := range releaseChannelPreference {
+		channel, ok := channels[name]
+		if !ok {
+			continue
+		}
+		if version == "" || channelSupportsVersion(channel, version) {
+			return name, nil
+		}
+	}
+
+	if version != "" {
+		return "", fmt.Errorf("kubernetes version [%s] is not available in any GKE release channel, and GKE no longer allows creating clusters without a release channel, please select a different version for cluster [%s (id: %s)]", version, config.Spec.ClusterName, config.Name)
+	}
+
+	return "", fmt.Errorf("no GKE release channel is available to create cluster [%s (id: %s)]", config.Spec.ClusterName, config.Name)
+}
+
+// channelSupportsVersion reports whether the given release channel can be used
+// to create a cluster running the given Kubernetes version. GKE accepts both
+// fully qualified versions and version prefixes, so prefixes are matched
+// against the versions valid for the channel.
+func channelSupportsVersion(channel *gkeapi.ReleaseChannelConfig, version string) bool {
+	for _, valid := range channel.ValidVersions {
+		if valid == version || strings.HasPrefix(valid, version+".") || strings.HasPrefix(valid, version+"-") {
+			return true
+		}
+	}
+	return channel.DefaultVersion == version
 }
 
 // validateCreateRequest checks a config for the ability to generate a create request

@@ -1,6 +1,9 @@
 package gke
 
 import (
+	"context"
+	"errors"
+
 	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -384,18 +387,43 @@ var _ = Describe("CreateNodePool", func() {
 	})
 })
 
-var _ = Describe("NewClusterCreateRequest release channel", func() {
+var _ = Describe("release channel on create", func() {
 	var (
-		k8sVersion      = "1.25.12-gke.200"
-		clusterIpv4Cidr = "10.42.0.0/16"
-		networkName     = "test-network"
-		subnetworkName  = "test-subnetwork"
-		emptyString     = ""
-		boolTrue        = true
-		config          *gkev1.GKEClusterConfig
+		mockController     *gomock.Controller
+		clusterServiceMock *mock_services.MockGKEClusterService
+		k8sVersion         = "1.25.12-gke.200"
+		clusterIpv4Cidr    = "10.42.0.0/16"
+		networkName        = "test-network"
+		subnetworkName     = "test-subnetwork"
+		emptyString        = ""
+		boolTrue           = true
+		boolFalse          = false
+		npName             = "test-node-pool"
+		npInitialNodeCount = int64(3)
+		npMaxPods          = int64(110)
+		config             *gkev1.GKEClusterConfig
+		serverConfig       *gkeapi.ServerConfig
 	)
 
 	BeforeEach(func() {
+		mockController = gomock.NewController(GinkgoT())
+		clusterServiceMock = mock_services.NewMockGKEClusterService(mockController)
+		serverConfig = &gkeapi.ServerConfig{
+			Channels: []*gkeapi.ReleaseChannelConfig{
+				{
+					Channel:       "RAPID",
+					ValidVersions: []string{"1.30.1-gke.100"},
+				},
+				{
+					Channel:       "REGULAR",
+					ValidVersions: []string{"1.29.1-gke.100", k8sVersion},
+				},
+				{
+					Channel:       "STABLE",
+					ValidVersions: []string{"1.28.1-gke.100"},
+				},
+			},
+		}
 		config = &gkev1.GKEClusterConfig{
 			Spec: gkev1.GKEClusterConfigSpec{
 				Region:                "test-region",
@@ -407,7 +435,7 @@ var _ = Describe("NewClusterCreateRequest release channel", func() {
 				KubernetesVersion:     &k8sVersion,
 				LoggingService:        &emptyString,
 				MonitoringService:     &emptyString,
-				EnableKubernetesAlpha: &boolTrue,
+				EnableKubernetesAlpha: &boolFalse,
 				Network:               &networkName,
 				Subnetwork:            &subnetworkName,
 				NetworkPolicyEnabled:  &boolTrue,
@@ -427,55 +455,155 @@ var _ = Describe("NewClusterCreateRequest release channel", func() {
 				MasterAuthorizedNetworksConfig: &gkev1.GKEMasterAuthorizedNetworksConfig{
 					Enabled: false,
 				},
+				NodePools: []gkev1.GKENodePoolConfig{
+					{
+						Name:              &npName,
+						InitialNodeCount:  &npInitialNodeCount,
+						Version:           &k8sVersion,
+						MaxPodsConstraint: &npMaxPods,
+						Config:            &gkev1.GKENodeConfig{},
+						Autoscaling:       &gkev1.GKENodePoolAutoscaling{},
+						Management: &gkev1.GKENodePoolManagement{
+							AutoUpgrade: false,
+						},
+					},
+				},
 			},
 		}
 	})
 
-	It("should default to no release channel when none is configured", func() {
-		request := NewClusterCreateRequest(config)
-		Expect(request.Cluster.ReleaseChannel).ToNot(BeNil())
-		Expect(request.Cluster.ReleaseChannel.Channel).To(Equal(ReleaseChannelUnspecified))
+	AfterEach(func() {
+		mockController.Finish()
 	})
 
-	It("should default to no release channel when an empty channel is configured", func() {
-		config.Spec.ReleaseChannel = &emptyString
-		request := NewClusterCreateRequest(config)
+	expectCreate := func() *gkeapi.CreateClusterRequest {
+		var request *gkeapi.CreateClusterRequest
+		clusterServiceMock.EXPECT().
+			ClusterList(
+				ctx,
+				LocationRRN(config.Spec.ProjectID, Location(config.Spec.Region, config.Spec.Zone))).
+			Return(&gkeapi.ListClustersResponse{}, nil)
+		clusterServiceMock.EXPECT().
+			ClusterCreate(ctx, gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, _ string, req *gkeapi.CreateClusterRequest) (*gkeapi.Operation, error) {
+				request = req
+				return &gkeapi.Operation{}, nil
+			})
+		Expect(Create(ctx, clusterServiceMock, config)).To(Succeed())
+		return request
+	}
+
+	It("should enroll in a channel that supports the requested version when no channel is configured", func() {
+		clusterServiceMock.EXPECT().
+			ServerConfigGet(
+				ctx,
+				LocationRRN(config.Spec.ProjectID, Location(config.Spec.Region, config.Spec.Zone))).
+			Return(serverConfig, nil)
+
+		request := expectCreate()
 		Expect(request.Cluster.ReleaseChannel).ToNot(BeNil())
-		Expect(request.Cluster.ReleaseChannel.Channel).To(Equal(ReleaseChannelUnspecified))
+		Expect(request.Cluster.ReleaseChannel.Channel).To(Equal(ReleaseChannelRegular))
 	})
 
-	It("should use the configured release channel", func() {
-		channel := "regular"
+	It("should force node auto-upgrade while enrolled in a release channel", func() {
+		clusterServiceMock.EXPECT().
+			ServerConfigGet(ctx, gomock.Any()).
+			Return(serverConfig, nil)
+
+		request := expectCreate()
+		Expect(request.Cluster.NodePools).To(HaveLen(1))
+		Expect(request.Cluster.NodePools[0].Management.AutoUpgrade).To(BeTrue())
+		// The configured value is left untouched so it is restored after the
+		// cluster is unenrolled from the release channel.
+		Expect(config.Spec.NodePools[0].Management.AutoUpgrade).To(BeFalse())
+	})
+
+	It("should prefer the most mature channel that supports the requested version", func() {
+		stableVersion := "1.28.1-gke.100"
+		config.Spec.KubernetesVersion = &stableVersion
+		config.Spec.NodePools[0].Version = &stableVersion
+		clusterServiceMock.EXPECT().
+			ServerConfigGet(ctx, gomock.Any()).
+			Return(serverConfig, nil)
+
+		request := expectCreate()
+		Expect(request.Cluster.ReleaseChannel.Channel).To(Equal(ReleaseChannelStable))
+	})
+
+	It("should use the configured channel without looking up the server config", func() {
+		channel := "rapid"
 		config.Spec.ReleaseChannel = &channel
-		request := NewClusterCreateRequest(config)
-		Expect(request.Cluster.ReleaseChannel).ToNot(BeNil())
-		Expect(request.Cluster.ReleaseChannel.Channel).To(Equal("REGULAR"))
+
+		request := expectCreate()
+		Expect(request.Cluster.ReleaseChannel.Channel).To(Equal(ReleaseChannelRapid))
 	})
 
-	It("should translate a none release channel to unspecified", func() {
-		channel := "None"
-		config.Spec.ReleaseChannel = &channel
-		request := NewClusterCreateRequest(config)
-		Expect(request.Cluster.ReleaseChannel).ToNot(BeNil())
-		Expect(request.Cluster.ReleaseChannel.Channel).To(Equal(ReleaseChannelUnspecified))
+	It("should not enroll alpha clusters in a release channel", func() {
+		config.Spec.EnableKubernetesAlpha = &boolTrue
+
+		request := expectCreate()
+		Expect(request.Cluster.ReleaseChannel).To(BeNil())
+		Expect(request.Cluster.NodePools[0].Management.AutoUpgrade).To(BeFalse())
 	})
 
-	It("should not set a release channel for autopilot clusters when none is configured", func() {
-		config.Spec.AutopilotConfig = &gkev1.GKEAutopilotConfig{
-			Enabled: true,
-		}
-		request := NewClusterCreateRequest(config)
+	It("should let GKE pick the channel for autopilot clusters", func() {
+		config.Spec.AutopilotConfig = &gkev1.GKEAutopilotConfig{Enabled: true}
+		config.Spec.NodePools = nil
+
+		request := expectCreate()
 		Expect(request.Cluster.ReleaseChannel).To(BeNil())
 	})
 
-	It("should use the configured release channel for autopilot clusters", func() {
-		channel := "STABLE"
-		config.Spec.AutopilotConfig = &gkev1.GKEAutopilotConfig{
-			Enabled: true,
+	It("should fail when no release channel supports the requested version", func() {
+		unsupported := "1.20.1-gke.100"
+		config.Spec.KubernetesVersion = &unsupported
+		config.Spec.NodePools[0].Version = &unsupported
+		clusterServiceMock.EXPECT().
+			ClusterList(ctx, gomock.Any()).
+			Return(&gkeapi.ListClustersResponse{}, nil)
+		clusterServiceMock.EXPECT().
+			ServerConfigGet(ctx, gomock.Any()).
+			Return(serverConfig, nil)
+
+		err := Create(ctx, clusterServiceMock, config)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("not available in any GKE release channel"))
+	})
+
+	It("should return the error when the server config cannot be read", func() {
+		clusterServiceMock.EXPECT().
+			ClusterList(ctx, gomock.Any()).
+			Return(&gkeapi.ListClustersResponse{}, nil)
+		clusterServiceMock.EXPECT().
+			ServerConfigGet(ctx, gomock.Any()).
+			Return(nil, errors.New("boom"))
+
+		err := Create(ctx, clusterServiceMock, config)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("error getting GKE server config"))
+	})
+})
+
+var _ = Describe("DesiredReleaseChannel", func() {
+	It("should normalize an unset channel to unspecified", func() {
+		Expect(DesiredReleaseChannel(&gkev1.GKEClusterConfig{})).To(Equal(ReleaseChannelUnspecified))
+	})
+
+	It("should normalize none to unspecified", func() {
+		for _, in := range []string{"none", "None", " NONE ", "", "unspecified"} {
+			channel := in
+			config := &gkev1.GKEClusterConfig{
+				Spec: gkev1.GKEClusterConfigSpec{ReleaseChannel: &channel},
+			}
+			Expect(DesiredReleaseChannel(config)).To(Equal(ReleaseChannelUnspecified))
 		}
-		config.Spec.ReleaseChannel = &channel
-		request := NewClusterCreateRequest(config)
-		Expect(request.Cluster.ReleaseChannel).ToNot(BeNil())
-		Expect(request.Cluster.ReleaseChannel.Channel).To(Equal("STABLE"))
+	})
+
+	It("should upper case a configured channel", func() {
+		channel := "regular"
+		config := &gkev1.GKEClusterConfig{
+			Spec: gkev1.GKEClusterConfigSpec{ReleaseChannel: &channel},
+		}
+		Expect(DesiredReleaseChannel(config)).To(Equal(ReleaseChannelRegular))
 	})
 })

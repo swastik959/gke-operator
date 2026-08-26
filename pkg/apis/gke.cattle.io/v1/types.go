@@ -145,13 +145,16 @@ type GKEClusterConfigSpec struct {
 	// +optional
 	CustomerManagedEncryptionKey *CMEKConfig `json:"customerManagedEncryptionKey,omitempty"`
 
-	// ReleaseChannel is the GKE release channel the cluster is enrolled in at
-	// creation time. Accepted values are UNSPECIFIED (also known as
-	// "No channel"), RAPID, REGULAR, STABLE and EXTENDED. When it is not set,
-	// standard clusters are created without a release channel (UNSPECIFIED),
-	// which is required since GKE no longer accepts create requests that omit
-	// a release channel. Autopilot clusters cannot opt out of release channels,
-	// so when it is not set they are enrolled in the channel selected by GKE.
+	// ReleaseChannel is the GKE release channel the cluster is enrolled in.
+	// Accepted values are UNSPECIFIED (also known as "No channel"), NONE,
+	// RAPID, REGULAR, STABLE and EXTENDED. When it is not set, standard
+	// clusters end up without a release channel, which matches the behavior of
+	// clusters created before GKE started requiring a release channel at
+	// creation time. Since GKE no longer accepts create requests without a
+	// release channel, such clusters are created in a temporary channel that
+	// supports the requested Kubernetes version and are unenrolled from it once
+	// they are running. Autopilot clusters cannot opt out of release channels,
+	// so when it is not set they stay in the channel selected by GKE.
 	// Changing this field after the cluster is created has no effect.
 	// +optional
 	ReleaseChannel *string `json:"releaseChannel,omitempty" norman:"pointer"`

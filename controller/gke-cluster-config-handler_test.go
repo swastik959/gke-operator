@@ -533,6 +533,7 @@ var _ = Describe("createCluster", func() {
 		nodePoolName := "test-node-pool"
 		initialNodeCount := int64(3)
 		maxPodsConstraint := int64(110)
+		releaseChannel := gke.ReleaseChannelRegular
 
 		gkeConfig = &gkev1.GKEClusterConfig{
 			ObjectMeta: metav1.ObjectMeta{
@@ -588,6 +589,7 @@ var _ = Describe("createCluster", func() {
 				MaintenanceWindow:      &emptyString,
 				GoogleCredentialSecret: credentialSecret.Namespace + ":" + credentialSecret.Name,
 				Imported:               false,
+				ReleaseChannel:         &releaseChannel,
 			},
 		}
 		Expect(cl.Create(ctx, gkeConfig)).To(Succeed())

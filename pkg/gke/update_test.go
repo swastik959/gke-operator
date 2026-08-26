@@ -1,6 +1,8 @@
 package gke
 
 import (
+	"context"
+
 	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -498,4 +500,87 @@ var _ = Describe("UpdateNodePoolAutoscaling", func() {
 		Expect(status).To(Equal(Changed))
 	})
 
+})
+
+var _ = Describe("UpdateReleaseChannel", func() {
+	var (
+		mockController     *gomock.Controller
+		clusterServiceMock *mock_services.MockGKEClusterService
+		config             *gkev1.GKEClusterConfig
+	)
+
+	BeforeEach(func() {
+		mockController = gomock.NewController(GinkgoT())
+		clusterServiceMock = mock_services.NewMockGKEClusterService(mockController)
+		config = &gkev1.GKEClusterConfig{
+			Spec: gkev1.GKEClusterConfigSpec{
+				Region:      "test-region",
+				ProjectID:   "test-project",
+				ClusterName: "test-cluster",
+			},
+		}
+	})
+
+	AfterEach(func() {
+		mockController.Finish()
+	})
+
+	It("should unenroll a cluster that should not be in a release channel", func() {
+		var request *gkeapi.UpdateClusterRequest
+		clusterServiceMock.EXPECT().
+			ClusterUpdate(
+				ctx,
+				ClusterRRN(config.Spec.ProjectID, Location(config.Spec.Region, config.Spec.Zone), config.Spec.ClusterName),
+				gomock.Any()).
+			DoAndReturn(func(_ context.Context, _ string, req *gkeapi.UpdateClusterRequest) (*gkeapi.Operation, error) {
+				request = req
+				return &gkeapi.Operation{}, nil
+			})
+
+		status, err := UpdateReleaseChannel(ctx, clusterServiceMock, config, ReleaseChannelRegular)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(status).To(Equal(Changed))
+		Expect(request.Update.DesiredReleaseChannel.Channel).To(Equal(ReleaseChannelUnspecified))
+	})
+
+	It("should not update a cluster that is already unenrolled", func() {
+		status, err := UpdateReleaseChannel(ctx, clusterServiceMock, config, ReleaseChannelUnspecified)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(status).To(Equal(NotChanged))
+	})
+
+	It("should not update a cluster that is already in the configured channel", func() {
+		channel := ReleaseChannelStable
+		config.Spec.ReleaseChannel = &channel
+
+		status, err := UpdateReleaseChannel(ctx, clusterServiceMock, config, ReleaseChannelStable)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(status).To(Equal(NotChanged))
+	})
+
+	It("should never unenroll an autopilot cluster", func() {
+		config.Spec.AutopilotConfig = &gkev1.GKEAutopilotConfig{Enabled: true}
+
+		status, err := UpdateReleaseChannel(ctx, clusterServiceMock, config, ReleaseChannelRegular)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(status).To(Equal(NotChanged))
+	})
+
+	It("should enroll a cluster in the configured channel", func() {
+		channel := ReleaseChannelStable
+		config.Spec.ReleaseChannel = &channel
+
+		var request *gkeapi.UpdateClusterRequest
+		clusterServiceMock.EXPECT().
+			ClusterUpdate(ctx, gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, _ string, req *gkeapi.UpdateClusterRequest) (*gkeapi.Operation, error) {
+				request = req
+				return &gkeapi.Operation{}, nil
+			})
+
+		status, err := UpdateReleaseChannel(ctx, clusterServiceMock, config, ReleaseChannelUnspecified)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(status).To(Equal(Changed))
+		Expect(request.Update.DesiredReleaseChannel.Channel).To(Equal(ReleaseChannelStable))
+	})
 })

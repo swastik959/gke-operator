@@ -25,6 +25,7 @@ type GKEClusterService interface {
 	SetSize(ctx context.Context, name string, setnodepoolsizerequest *gkeapi.SetNodePoolSizeRequest) (*gkeapi.Operation, error)
 	SetAutoscaling(ctx context.Context, name string, setnodepoolautoscalingrequest *gkeapi.SetNodePoolAutoscalingRequest) (*gkeapi.Operation, error)
 	SetManagement(ctx context.Context, name string, setnodepoolmanagementrequest *gkeapi.SetNodePoolManagementRequest) (*gkeapi.Operation, error)
+	ServerConfigGet(ctx context.Context, name string) (*gkeapi.ServerConfig, error)
 }
 
 type gkeClusterService struct {
@@ -103,4 +104,8 @@ func (g *gkeClusterService) SetAutoscaling(ctx context.Context, name string, set
 
 func (g *gkeClusterService) SetManagement(ctx context.Context, name string, setnodepoolmanagementrequest *gkeapi.SetNodePoolManagementRequest) (*gkeapi.Operation, error) {
 	return g.svc.Projects.Locations.Clusters.NodePools.SetManagement(name, setnodepoolmanagementrequest).Context(ctx).Do()
+}
+
+func (g *gkeClusterService) ServerConfigGet(ctx context.Context, name string) (*gkeapi.ServerConfig, error) {
+	return g.svc.Projects.Locations.GetServerConfig(name).Context(ctx).Do()
 }

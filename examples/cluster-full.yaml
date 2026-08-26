@@ -105,4 +105,8 @@ spec:
   - us-west1-b
   - us-west1-c
   maintenanceWindow: "00:00"
+  # UNSPECIFIED (also "NONE") means the cluster is not enrolled in any release
+  # channel, which is the default. RAPID, REGULAR, STABLE and EXTENDED enroll
+  # the cluster in the matching GKE release channel.
+  releaseChannel: "UNSPECIFIED"
   googleCredentialSecret: "cattle-global-data:cc-abcde"

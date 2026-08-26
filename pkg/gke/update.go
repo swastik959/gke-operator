@@ -362,6 +362,53 @@ func UpdateMaintenanceWindow(
 	return Changed, nil
 }
 
+// UpdateReleaseChannel enrolls the cluster in the release channel it is
+// configured to use, or unenrolls it when it should not be enrolled in any
+// channel.
+//
+// GKE no longer allows creating a cluster that is not enrolled in a release
+// channel, so clusters that should not be enrolled are created in a temporary
+// channel and unenrolled by this function once they are running. Unenrolling is
+// still allowed, only creating is restricted.
+func UpdateReleaseChannel(
+	ctx context.Context,
+	gkeClient services.GKEClusterService,
+	config *gkev1.GKEClusterConfig,
+	upstreamChannel string) (Status, error) {
+	desired := DesiredReleaseChannel(config)
+	if desired == ReleaseChannelUnspecified && !CanUnenrollFromReleaseChannel(config) {
+		// Autopilot clusters are always managed by a release channel.
+		return NotChanged, nil
+	}
+
+	if strings.EqualFold(upstreamChannel, desired) {
+		return NotChanged, nil
+	}
+
+	if desired == ReleaseChannelUnspecified {
+		logrus.Infof("Unenrolling cluster [%s (id: %s)] from release channel %s", config.Spec.ClusterName, config.Name, upstreamChannel)
+	} else {
+		logrus.Infof("Updating release channel to %s for cluster [%s (id: %s)]", desired, config.Spec.ClusterName, config.Name)
+	}
+	_, err := gkeClient.ClusterUpdate(ctx,
+		ClusterRRN(config.Spec.ProjectID, Location(config.Spec.Region, config.Spec.Zone), config.Spec.ClusterName),
+		&gkeapi.UpdateClusterRequest{
+			Update: &gkeapi.ClusterUpdate{
+				DesiredReleaseChannel: &gkeapi.ReleaseChannel{
+					Channel: desired,
+				},
+			},
+		},
+	)
+	if err != nil && strings.Contains(err.Error(), errWait) {
+		return Retry, nil
+	}
+	if err != nil {
+		return NotChanged, err
+	}
+	return Changed, nil
+}
+
 // UpdateLabels updates the cluster labels.
 func UpdateLabels(
 	ctx context.Context,

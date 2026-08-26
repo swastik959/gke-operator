@@ -483,6 +483,20 @@ func (h *Handler) waitForCreationComplete(config *gkev1.GKEClusterConfig) (*gkev
 		return config, fmt.Errorf("creation failed for cluster [%s (id: %s)]", config.Spec.ClusterName, config.Name)
 	}
 	if cluster.Status == ClusterStatusRunning {
+		// GKE requires new clusters to be enrolled in a release channel, so
+		// clusters that should not be enrolled in one are created in a temporary
+		// channel and unenrolled here. The reconcile loop restores the configured
+		// node management settings afterwards, since node auto-upgrade cannot be
+		// disabled while a cluster is enrolled in a release channel.
+		changed, err := gke.UpdateReleaseChannel(h.gkeClientCtx, h.gkeClient, config, upstreamReleaseChannel(cluster))
+		if err != nil {
+			return config, err
+		}
+		if changed != gke.NotChanged {
+			h.gkeEnqueueAfter(config.Namespace, config.Name, wait*time.Second)
+			return config, nil
+		}
+
 		if err := h.createCASecret(config, cluster); err != nil {
 			return config, err
 		}
@@ -495,6 +509,16 @@ func (h *Handler) waitForCreationComplete(config *gkev1.GKEClusterConfig) (*gkev
 	h.gkeEnqueueAfter(config.Namespace, config.Name, wait*time.Second)
 
 	return config, nil
+}
+
+// upstreamReleaseChannel returns the release channel the given cluster is
+// currently enrolled in, normalized to UNSPECIFIED when it is not enrolled in
+// any channel.
+func upstreamReleaseChannel(cluster *gkeapi.Cluster) string {
+	if cluster.ReleaseChannel == nil || cluster.ReleaseChannel.Channel == "" {
+		return gke.ReleaseChannelUnspecified
+	}
+	return cluster.ReleaseChannel.Channel
 }
 
 func (h *Handler) buildUpstreamClusterState(cluster *gkeapi.Cluster) (*gkev1.GKEClusterConfigSpec, error) {

@@ -312,9 +312,9 @@ func resolveReleaseChannelFromVersion(ctx context.Context, gkeClient services.GK
 
 	priorityOrder := []string{
 		gkeReleaseChannelStable,
-		gkeReleaseChannelExtended,
 		gkeReleaseChannelRegular,
 		gkeReleaseChannelRapid,
+		gkeReleaseChannelExtended,
 	}
 
 	for _, channel := range priorityOrder {

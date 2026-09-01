@@ -62,6 +62,26 @@ spec:
               googleCredentialSecret:
                 nullable: true
                 type: string
+              googleCredentialType:
+                default: serviceAccountKey
+                description: |-
+                  GoogleCredentialType selects how the operator obtains Google Cloud credentials.
+                  `serviceAccountKey` (deprecated) consumes a long-lived service-account JSON key from googleCredentialSecret.
+                  `workloadIdentityFederation` consumes an `external_account` JSON document from googleCredentialSecret.
+                  `applicationDefault` uses Application Default Credentials from the operator's environment and requires no secret.
+                enum:
+                - serviceAccountKey
+                - workloadIdentityFederation
+                - applicationDefault
+                nullable: true
+                type: string
+              impersonateServiceAccount:
+                description: |-
+                  ImpersonateServiceAccount, if set, is the email address of a GCP
+                  service account to impersonate. The base credentials are wrapped with
+                  a short-lived impersonated token source.
+                nullable: true
+                type: string
               imported:
                 type: boolean
               ipAllocationPolicy:

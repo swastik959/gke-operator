@@ -79,8 +79,33 @@ type GKEClusterConfigSpec struct {
 	ProjectID string `json:"projectID"`
 
 	// GoogleCredentialSecret is the name of the secret containing Google credentials.
-	// +kubebuilder:validation:Required
+	// Required for credential types `serviceAccountKey` and `workloadIdentityFederation`;
+	// must be empty when `applicationDefault` is used.
+	// +optional
 	GoogleCredentialSecret string `json:"googleCredentialSecret"`
+
+	// GoogleCredentialType selects how the operator obtains Google Cloud
+	// credentials. Supported values are:
+	//   - `serviceAccountKey` (default, deprecated): use a long-lived
+	//     service-account JSON key stored in GoogleCredentialSecret.
+	//   - `workloadIdentityFederation`: use a Workload Identity Federation
+	//     `external_account` JSON document stored in GoogleCredentialSecret.
+	//   - `applicationDefault`: use Application Default Credentials from the
+	//     environment the operator runs in (e.g. GKE Workload Identity for a
+	//     Rancher pod running on GCP). No secret is required.
+	// Defaults to `serviceAccountKey` for backward compatibility.
+	// +optional
+	// +kubebuilder:validation:Enum=serviceAccountKey;workloadIdentityFederation;applicationDefault
+	// +kubebuilder:default=serviceAccountKey
+	GoogleCredentialType string `json:"googleCredentialType,omitempty"`
+
+	// ImpersonateServiceAccount is the email address of a GCP service account
+	// to impersonate. When set, the base credentials (from any of the
+	// supported credential types) are wrapped with a short-lived,
+	// auto-rotated impersonated token source. This is a stepping stone toward
+	// fully keyless operation.
+	// +optional
+	ImpersonateServiceAccount string `json:"impersonateServiceAccount,omitempty"`
 
 	// ClusterName is the name of the GKE cluster.
 	// +kubebuilder:validation:Required

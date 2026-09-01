@@ -21,7 +21,48 @@ func parseCredential(ref string) (namespace string, name string) {
 	return parts[0], parts[1]
 }
 
+// credentialType returns the configured google credential type, defaulting to
+// the legacy service-account-key behaviour when unspecified.
+func credentialType(configSpec *gkev1.GKEClusterConfigSpec) string {
+	if configSpec == nil || configSpec.GoogleCredentialType == "" {
+		return gke.CredentialTypeServiceAccountKey
+	}
+	return configSpec.GoogleCredentialType
+}
+
+// ValidateCredentialSpec performs lightweight validation of the credential
+// related fields on a GKEClusterConfigSpec. It is intentionally tolerant of
+// missing data (returning nil) when the chosen credential type does not
+// require a secret.
+func ValidateCredentialSpec(configSpec *gkev1.GKEClusterConfigSpec) error {
+	if configSpec == nil {
+		return nil
+	}
+	switch credentialType(configSpec) {
+	case gke.CredentialTypeApplicationDefault:
+		if configSpec.GoogleCredentialSecret != "" {
+			return fmt.Errorf("googleCredentialSecret must be empty when googleCredentialType is %q", gke.CredentialTypeApplicationDefault)
+		}
+	case gke.CredentialTypeServiceAccountKey, gke.CredentialTypeWorkloadIdentityFederation:
+		if configSpec.GoogleCredentialSecret == "" {
+			return fmt.Errorf("googleCredentialSecret is required for googleCredentialType %q", credentialType(configSpec))
+		}
+	default:
+		return fmt.Errorf("unsupported googleCredentialType %q", configSpec.GoogleCredentialType)
+	}
+	return nil
+}
+
+// GetSecret returns the raw JSON credential document referenced by the
+// config spec, or an empty string when the configured credential type does
+// not require a secret (e.g. applicationDefault).
 func GetSecret(_ context.Context, secretsClient wranglerv1.SecretClient, configSpec *gkev1.GKEClusterConfigSpec) (string, error) {
+	if err := ValidateCredentialSpec(configSpec); err != nil {
+		return "", err
+	}
+	if credentialType(configSpec) == gke.CredentialTypeApplicationDefault {
+		return "", nil
+	}
 	ns, id := parseCredential(configSpec.GoogleCredentialSecret)
 	secret, err := secretsClient.Get(ns, id, metav1.GetOptions{})
 	if err != nil {
@@ -34,12 +75,24 @@ func GetSecret(_ context.Context, secretsClient wranglerv1.SecretClient, configS
 	return string(dataBytes), nil
 }
 
+// authOptionsFor builds the gke.AuthOptions corresponding to a config spec.
+func authOptionsFor(configSpec *gkev1.GKEClusterConfigSpec, credential string) gke.AuthOptions {
+	if configSpec == nil {
+		return gke.AuthOptions{Credential: credential}
+	}
+	return gke.AuthOptions{
+		CredentialType:            credentialType(configSpec),
+		Credential:                credential,
+		ImpersonateServiceAccount: configSpec.ImpersonateServiceAccount,
+	}
+}
+
 func GetCluster(ctx context.Context, secretsClient wranglerv1.SecretClient, configSpec *gkev1.GKEClusterConfigSpec) (*gkeapi.Cluster, error) {
 	cred, err := GetSecret(ctx, secretsClient, configSpec)
 	if err != nil {
 		return nil, err
 	}
-	gkeClient, err := gke.GetGKEClusterClient(ctx, cred)
+	gkeClient, err := gke.GetGKEClusterClientWithOptions(ctx, authOptionsFor(configSpec, cred))
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +104,7 @@ func GetTokenSource(ctx context.Context, secretsClient wranglerv1.SecretClient, 
 	if err != nil {
 		return nil, fmt.Errorf("error getting secret: %w", err)
 	}
-	ts, err := gke.GetTokenSource(ctx, cred)
+	ts, err := gke.GetTokenSourceWithOptions(ctx, authOptionsFor(configSpec, cred))
 	if err != nil {
 		return nil, fmt.Errorf("error getting oauth2 token: %w", err)
 	}
@@ -65,7 +118,7 @@ func BuildUpstreamClusterState(ctx context.Context, secretsCache wranglerv1.Secr
 	if err != nil {
 		return nil, err
 	}
-	gkeClient, err := gke.GetGKEClusterClient(ctx, cred)
+	gkeClient, err := gke.GetGKEClusterClientWithOptions(ctx, authOptionsFor(configSpec, cred))
 	if err != nil {
 		return nil, err
 	}
